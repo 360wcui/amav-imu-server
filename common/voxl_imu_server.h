@@ -75,6 +75,7 @@
 #define VOXL_IMU3_NAME		"imu3"
 #define VOXL_IMU3_LOCATION	(MODAL_PIPE_DEFAULT_BASE_DIR VOXL_IMU3_NAME "/")
 
+
 // helper arrays for accessing name strings by index
 #define VOXL_IMU_NAME_ARRAY		{VOXL_IMU0_NAME, \
 								 VOXL_IMU1_NAME, \

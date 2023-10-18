@@ -40,9 +40,18 @@
 #include <stdlib.h> // for atoi(), exit(), and system()
 #include <sched.h>
 #include <errno.h>
+#include <modal_pipe.h>
+#include <stdlib.h>
+//#include <voxl_cutils.h>
+#include <algorithm>
+#include <sstream>
+#include <vector>
 
 #include <modal_start_stop.h>
 #include <modal_pipe_server.h>
+
+#include <iostream>
+#include <fstream>
 
 #include "config_file.h"
 #include "cal_file.h"
@@ -55,6 +64,9 @@
 // mpu9250 can read the most in one go: 292. Increase this is a new imu is added
 // which allows for more. For now use buffers with 300 for some padding.
 #define MAX_FIFO_SAMPLES 300
+
+#define VOXL_VINS_NAME		"vins"
+#define VOXL_VINS_LOCATION	(MODAL_PIPE_DEFAULT_BASE_DIR VOXL_VINS_NAME "/")
 
 // extern debug vars shared across anything that might want to print debug info
 #include "global_debug_flags.h"
@@ -71,6 +83,7 @@ static int delay = 0;
 static int force_common_frame_off = 0; // turn common frame off for calibration
 static int force_imu[N_IMUS]; // debug tool set by args to force an IMU on
 static pthread_t read_thread[N_IMUS];
+static pthread_t read_vin_thread[N_IMUS];
 static pthread_t fft_thread[N_IMUS];
 static fft_buffer_t fft_buf[N_IMUS];
 static cJSON* pipe_info_json[N_IMUS];
@@ -310,6 +323,75 @@ static void _quit(int ret)
 	return;
 }
 
+static void* _read_vins_thread_func(void* context)
+{
+     imu_data_t* data_array;
+     int packets_read = 1;
+	// run until the global main_running flag becomes 0
+    std::ifstream file("/home/root/vio");
+    float array[6];
+//    int i= 0;
+    char cNum[10];
+	while(main_running){
+
+//        std::ifstream file("/home/root/vio");
+//        float array[6];
+//        int i= 0;
+//        char cNum[10];
+        if (file.is_open()) {
+            std::string line;
+            if (std::getline(file, line)) {
+                std::stringstream ss(line);
+                std::string token;
+                std::vector<float> floats;
+
+                // Split the line by commas and convert to floats
+                while (std::getline(ss, token, ',')) {
+                    try {
+                        float value = std::stof(token);
+                        floats.push_back(value);
+                    } catch (const std::exception& e) {
+                        // Handle any conversion errors here
+                        std::cerr << "Error converting to float: " << e.what() << std::endl;
+                    }
+                }
+
+                if (floats.size() == 8) {
+                    // You can access the individual floats using floats[0], floats[1], etc.
+                    data_array->accl_ms2[0] = floats[0];
+                    data_array->accl_ms2[1] = floats[1];
+                    data_array->accl_ms2[2] = floats[2];
+
+                    data_array->gyro_rad[0] = floats[3];
+                    data_array->gyro_rad[1] = floats[4];
+                    data_array->gyro_rad[2] = floats[5];
+                    data_array->temp_c = floats[6];
+                    data_array->timestamp_ns = (int)(floats[6] * 1e9);
+
+
+                } else {
+                    std::cerr << "File does not contain exactly six floats." << std::endl;
+                }
+             } else {
+                         std::cerr << "Failed to read a line from the file." << std::endl;
+             }
+                 // Close the file
+             file.close();
+        } else {
+             std::cerr << "Failed to open the file." << std::endl;
+        }
+
+		// send to pipe
+		if(packets_read>0){
+			pipe_server_write(N_IMUS, (char*)data_array, packets_read*sizeof(imu_data_t));
+		}
+
+		// in basic mode or if delay is enabled in fifo mode, sleep a bit
+		usleep(1000000/imu_sample_rate_hz[0]);
+	}
+
+	return NULL;
+}
 
 static void* _read_thread_func(void* context)
 {
@@ -642,6 +724,17 @@ int main(int argc, char* argv[])
 
 		success=1; // flag that at least one IMU succeeded
 	}
+
+    pipe_info_t info = { \
+        VOXL_VINS_NAME,\
+        VOXL_VINS_LOCATION,\
+        "imu_data_t",\
+        PROCESS_NAME,\
+        IMU_RECOMMENDED_PIPE_SIZE,\
+        0};
+
+    pipe_server_create(2 * N_IMUS, info, SERVER_FLAG_EN_CONTROL_PIPE);
+
 
 	// check that at least one IMU enabled
 	if(!success){
