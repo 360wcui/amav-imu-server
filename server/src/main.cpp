@@ -83,7 +83,7 @@ static int delay = 0;
 static int force_common_frame_off = 0; // turn common frame off for calibration
 static int force_imu[N_IMUS]; // debug tool set by args to force an IMU on
 static pthread_t read_thread[N_IMUS];
-static pthread_t read_vin_thread[N_IMUS];
+static pthread_t read_vin_thread[1];
 static pthread_t fft_thread[N_IMUS];
 static fft_buffer_t fft_buf[N_IMUS];
 static cJSON* pipe_info_json[N_IMUS];
@@ -325,26 +325,16 @@ static void _quit(int ret)
 
 static void* _read_vins_thread_func(void* context)
 {
-     imu_data_t* data_array;
-     int packets_read = 1;
-	// run until the global main_running flag becomes 0
-    std::ifstream file("/home/root/vio");
-    float array[6];
-//    int i= 0;
-    char cNum[10];
+    imu_data_t data;
+    int id = (intptr_t)context;
 	while(main_running){
-
-//        std::ifstream file("/home/root/vio");
-//        float array[6];
-//        int i= 0;
-//        char cNum[10];
+        std::ifstream file("/home/root/vio");
         if (file.is_open()) {
             std::string line;
             if (std::getline(file, line)) {
                 std::stringstream ss(line);
                 std::string token;
                 std::vector<float> floats;
-
                 // Split the line by commas and convert to floats
                 while (std::getline(ss, token, ',')) {
                     try {
@@ -358,36 +348,31 @@ static void* _read_vins_thread_func(void* context)
 
                 if (floats.size() == 8) {
                     // You can access the individual floats using floats[0], floats[1], etc.
-                    data_array->accl_ms2[0] = floats[0];
-                    data_array->accl_ms2[1] = floats[1];
-                    data_array->accl_ms2[2] = floats[2];
+                    data.accl_ms2[0] = floats[0];
+                    data.accl_ms2[1] = floats[1];
+                    data.accl_ms2[2] = floats[2];
 
-                    data_array->gyro_rad[0] = floats[3];
-                    data_array->gyro_rad[1] = floats[4];
-                    data_array->gyro_rad[2] = floats[5];
-                    data_array->temp_c = floats[6];
-                    data_array->timestamp_ns = (int)(floats[6] * 1e9);
-
+                    data.gyro_rad[0] = floats[3];
+                    data.gyro_rad[1] = floats[4];
+                    data.gyro_rad[2] = floats[5];
+                    data.temp_c = floats[6];
+                    data.timestamp_ns = (uint64_t)(floats[7] * 1e9);
 
                 } else {
-                    std::cerr << "File does not contain exactly six floats." << std::endl;
+                    std::cout << "File does not contain exactly six floats." << std::endl;
                 }
              } else {
-                         std::cerr << "Failed to read a line from the file." << std::endl;
+                 std::cout << "Failed to read a line from the file." << std::endl;
              }
-                 // Close the file
              file.close();
         } else {
-             std::cerr << "Failed to open the file." << std::endl;
+             std::cout << "Failed to open the file." << std::endl;
+             continue;
         }
-
 		// send to pipe
-		if(packets_read>0){
-			pipe_server_write(N_IMUS, (char*)data_array, packets_read*sizeof(imu_data_t));
-		}
-
+		pipe_server_write(2 * N_IMUS + id, &data, sizeof(imu_data_t));
 		// in basic mode or if delay is enabled in fifo mode, sleep a bit
-		usleep(1000000/imu_sample_rate_hz[0]);
+		usleep(200);
 	}
 
 	return NULL;
@@ -725,7 +710,7 @@ int main(int argc, char* argv[])
 		success=1; // flag that at least one IMU succeeded
 	}
 
-    pipe_info_t info = { \
+    pipe_info_t info3 = { \
         VOXL_VINS_NAME,\
         VOXL_VINS_LOCATION,\
         "imu_data_t",\
@@ -733,7 +718,7 @@ int main(int argc, char* argv[])
         IMU_RECOMMENDED_PIPE_SIZE,\
         0};
 
-    pipe_server_create(2 * N_IMUS, info, SERVER_FLAG_EN_CONTROL_PIPE);
+    pipe_server_create(2 * N_IMUS, info3, SERVER_FLAG_EN_CONTROL_PIPE);
 
 
 	// check that at least one IMU enabled
@@ -766,8 +751,13 @@ int main(int argc, char* argv[])
 		if(imu_enable[i]){
 			pthread_create(&read_thread[i], &tattr, _read_thread_func, (void*)i);
 			pthread_create(&fft_thread[i], &tattr, _fft_thread_func, (void*)i);
+			if (i == 0) {
+			    pthread_create(&read_vin_thread[i], &tattr, _read_vins_thread_func, (void*)i);
+			}
+
 		}
 	}
+
 
 	// run until start/stop module catches a signal and changes main_running to 0
 	while(main_running) usleep(500000000);
@@ -785,6 +775,8 @@ int main(int argc, char* argv[])
 			pthread_join(fft_thread[i], NULL);
 		}
 	}
+	pthread_join(read_vin_thread[0], NULL);
+    printf("joining vins thread %d\n", 0);
 	_quit(0);
 	return 0;
 }
