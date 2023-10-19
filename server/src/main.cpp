@@ -372,7 +372,7 @@ static void* _read_vins_thread_func(void* context)
 		// send to pipe
 		pipe_server_write(2 * N_IMUS + id, &data, sizeof(imu_data_t));
 		// in basic mode or if delay is enabled in fifo mode, sleep a bit
-		usleep(200);
+		usleep(200000);
 	}
 
 	return NULL;
